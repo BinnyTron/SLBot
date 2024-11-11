@@ -1,5 +1,5 @@
 from struct import *
-#from zerocode import  *
+#from zerocode import  * Commented for note.
 
 import hashlib
 
@@ -8,7 +8,8 @@ import xmlrpc.client as xmlrpclib
 
 import sys 
 import re
-import socket, sys, time
+import socket       # https://docs.python.org/3/library/socket.html
+import time    
 import uuid
 from datetime import datetime
 from mainHelpers import *
@@ -195,8 +196,79 @@ def sendLogoutRequest(sock, port, host,seqnum,aUUID,sUUID):
     sock.sendto(packed_data, (host, port))
     return
  
+
+'''
+Session
+->PacketProcessor:composite
+    ->PacketReceiver:composite
+        --- 
+        +BUFFER_SIZE
+        +receivedData 
+        +receivedAddress
+        --- 
+        +pollSocketReceive(socket):Data,Address
+        ---
+    ->PacketDecoder:composite 
+    ->PacketHandler:composite
+        --- 
+        -__parser_d
+        --- 
+        -__message_template_parser()
+
+'''
+
+
+'''
+Responsible for the entire session
+By Composition: Packet Processor (ingress/egress)
+A session has a packet processor.
+1 Avatar per session instance.
+'''
+class Session(): 
+    pass 
+
+'''
+Responsible for packet traffic
+By Composition: PacketReceiver, PacketDecoder, PacketHandler.
+1 PacketProcessor per Session
+'''
+class PacketProcessor():
+    pass
+
+'''
+Responsible for receiving packets
+1 Packet Receiver per PacketProcessor
+'''
+class PacketReceiver():
+
+    def __init__(self): 
+        self.BUFFER_SIZE        = 65507
+        self.receivedData       = None
+        self.receivedAddress    = None
+
+    def pollSocketReceive(self, socket):
+        self.receivedData,self.receivedAddress = socket.recvfrom(self.BUFFER_SIZE)
+    
+'''
+Responsible for decoding packets
+1 Packet Decoder per PacketProcessor
+'''
+class PacketDecoder():
+    pass 
+
+'''
+Responsible for Handling packets
+1 Packet Handler per PacketProcessor
+'''
+class PacketHandler():
+    pass
+    
+
  
 def establishpresence(host, port, circuit_code):
+ 
+    packetReceiver = PacketReceiver() 
+ 
  
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     #Sending packet UseCircuitCode <-- Inits the connection to the sim.
@@ -212,8 +284,8 @@ def establishpresence(host, port, circuit_code):
     
     sendUUIDNameRequest(sock, port, host, 4,aUUID)
 
-    # Buffer should be large enough for packet.
-    buf = 65507
+    ## Buffer should be large enough for packet.
+    # buf = 65507
     i = 0
     trusted_count = 0
     ackable = 0
@@ -236,7 +308,12 @@ def establishpresence(host, port, circuit_code):
             seqnum += 1
 
         i += 1
-        data,addr = sock.recvfrom(buf)
+        
+        # data,addr = sock.recvfrom(buf)
+        packetReceiver.pollSocketReceive(sock)
+        data = packetReceiver.receivedData 
+        addr = packetReceiver.receivedAddress
+        
         t = datetime.now()
         t.strftime("%H:%M:%S")
 
