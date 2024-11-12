@@ -200,6 +200,7 @@ def sendLogoutRequest(sock, port, host,seqnum,aUUID,sUUID):
 '''
 Session
 ->PacketProcessor:composite
+    Ingress
     ->PacketReceiver:composite
         --- 
         +BUFFER_SIZE
@@ -209,11 +210,21 @@ Session
         +pollSocketReceive(socket):Data,Address
         ---
     ->PacketDecoder:composite 
+    
+    Locus 
     ->PacketHandler:composite
         --- 
         -__parser_d
         --- 
         -__message_template_parser()
+        +initializeConnection():None (temp)
+        +establishAgentPresence:None (temp)
+
+        
+    Egress
+    ->PacketEncoder:composite 
+    ->PacketTransmitter:composite
+
 
 '''
 
@@ -241,13 +252,14 @@ Responsible for receiving packets
 '''
 class PacketReceiver():
 
-    def __init__(self): 
+    def __init__(self, sock): 
         self.BUFFER_SIZE        = 65507
         self.receivedData       = None
         self.receivedAddress    = None
+        self.sock               = sock
 
-    def pollSocketReceive(self, socket):
-        self.receivedData,self.receivedAddress = socket.recvfrom(self.BUFFER_SIZE)
+    def pollSocketReceive(self):
+        self.receivedData,self.receivedAddress = self.sock.recvfrom(self.BUFFER_SIZE)
     
 '''
 Responsible for decoding packets
@@ -261,31 +273,63 @@ Responsible for Handling packets
 1 Packet Handler per PacketProcessor
 '''
 class PacketHandler():
-    pass
+
+    def __init__(self, sock, host, port, circuit_code):
+    
+        # Aggregates
+        self.sock         = sock
+        self.host         = host 
+        self.port         = port 
+        self.circuit_code = circuit_code
+        
+        # Stateful
+        self.connectionInitialized = False
+        self.presenceEstablished   = False
+        
+    '''
+    Initialize connection to the sim
+    '''
+    def initializeConnection(self):
+      # archived note: "Sending packet UseCircuitCode <-- Inits the connection to the sim."
+      data = pack('>BLBL',0x00,0x01,00,0xffff0003) + pack('<L',self.circuit_code) + uuid.UUID(result["session_id"]).bytes+uuid.UUID(result["agent_id"]).bytes
+      self.sock.sendto(data, (self.host, self.port))
+      
+      self.connectionInitialized = True
+
+    
+    '''
+    Establish sim presence
+    '''
+    def establishAgentPresence(self):
+      # archived note: "ISending packet CompleteAgentMovement <-- establishes the agent's presence"
+      data = pack('>BLBL',0x00,0x02,00,0xffff00f9) + uuid.UUID(result["agent_id"]).bytes + uuid.UUID(result["session_id"]).bytes + pack('<L', self.circuit_code)
+      self.sock.sendto(data, (self.host, self.port))
+      
+      self.presenceEstablished = True 
+    
+    
     
 
  
 def establishpresence(host, port, circuit_code):
  
-    packetReceiver = PacketReceiver() 
- 
- 
+    # Create a process supporting IPv4 and connectionless UDP frames. 
+    # defaults socket(family=AF_Inet, type=SOCK_STREAM, proto=0, fileno=None)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    #Sending packet UseCircuitCode <-- Inits the connection to the sim.
-    data = pack('>BLBL',0x00,0x01,00,0xffff0003) + pack('<L',circuit_code) + uuid.UUID(result["session_id"]).bytes+uuid.UUID(result["agent_id"]).bytes
-    sock.sendto(data, (host, port))
+    
+    packetReceiver = PacketReceiver(sock) 
+    packetHandler  = PacketHandler(sock, host, port, circuit_code)
  
-    #ISending packet CompleteAgentMovement <-- establishes the agent's presence
-    data = pack('>BLBL',0x00,0x02,00,0xffff00f9) + uuid.UUID(result["agent_id"]).bytes + uuid.UUID(result["session_id"]).bytes + pack('<L', circuit_code)
-    sock.sendto(data, (host, port))
+    packetHandler.initializeConnection()
+    packetHandler.establishAgentPresence()
+ 
+
  
     sendAgentUpdate(sock, port, host, 3, result)
     aUUID = [result["agent_id"]]
     
     sendUUIDNameRequest(sock, port, host, 4,aUUID)
 
-    ## Buffer should be large enough for packet.
-    # buf = 65507
     i = 0
     trusted_count = 0
     ackable = 0
@@ -308,9 +352,8 @@ def establishpresence(host, port, circuit_code):
             seqnum += 1
 
         i += 1
-        
-        # data,addr = sock.recvfrom(buf)
-        packetReceiver.pollSocketReceive(sock)
+
+        packetReceiver.pollSocketReceive()
         data = packetReceiver.receivedData 
         addr = packetReceiver.receivedAddress
         
@@ -400,7 +443,9 @@ def establishpresence(host, port, circuit_code):
                                 
                                 if RESPONSE_ENABLE == True:
                                     sock.sendto(data, (host, port))
-
+                            
+                            
+                            # See message_template.msg
                             # Something in this is incorrect because we can receive the start of a message on byte 49 and not 68
                             # Receiving chat does return different status flags (So we can know whether someone is typing, or something else.)
                             # {	FromName		Variable 1	}  (First Byte determines number of bytes that follow)
