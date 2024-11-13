@@ -21,7 +21,8 @@ password = b'p@ssw0rd'
 
 # Response is gated here (set to true for bot to chat back.) 
 RESPONSE_ENABLE = False
- 
+DEBUG_ENABLE    = False
+
 packetdictionary = {}
 outputstring = ''
 ack_need_list = []
@@ -89,14 +90,12 @@ def scheduleacknowledgemessage(data):
 
     if not ord(chr(data[0]))&0x40:
         print("OOOPS! Got asked to ack a message that shouldn't be acked")
-        return
     else:
         ID = data[1:5]
 
-        if (ord(chr(data[0]))&0x40) & 0x80: ID = zero_decode_ID(ID)
-        ack_need_list.append(unpack(">L",ID)[0])
-        
-    return
+        if (ord(chr(data[0]))&0x40) & 0x80: 
+          ID = zero_decode_ID(ID)
+          ack_need_list.append(unpack(">L",ID)[0])
  
 def packacks():
     acksequence = b''
@@ -122,7 +121,6 @@ def sendUUIDNameRequest(sock, port, host, currentsequence,aUUID):
     encoded_packed_data = str(packed_data).encode('latin-1')
  
     sock.sendto(encoded_packed_data, (host, port))
-    return              
  
 def sendRegionHandshakeReply(sock, port, host, currentsequence,agentUUID,sessionUUID):
     packed_data = ""
@@ -132,7 +130,6 @@ def sendRegionHandshakeReply(sock, port, host, currentsequence,agentUUID,session
     packed_data += uuid.UUID(agentUUID).bytes+uuid.UUID(sessionUUID).bytes+ pack(">L",0x00)
     packed_data = data_header + pack(">L",int(low_ID,16))+packed_data
     sock.sendto(packed_data, (host, port)) 
-    return
  
  
  
@@ -161,7 +158,6 @@ def sendAgentUpdate(sock, port, host, currentsequence, result):
     packed_data = data_header + encoded_packed_data + tempacks
 
     sock.sendto(packed_data, (host, port))
-    return
  
 def sendCompletePingCheck(sock, port, host, currentsequence,data,lastPingSent):
  
@@ -170,8 +166,6 @@ def sendCompletePingCheck(sock, port, host, currentsequence,data,lastPingSent):
     packed_data = data_header + packed_data_message_ID+pack('>B', lastPingSent)
 
     sock.sendto(packed_data, (host, port))
- 
-    return
  
 def sendPacketAck(sock, port, host,currentsequence):
  
@@ -185,7 +179,6 @@ def sendPacketAck(sock, port, host,currentsequence):
     packed_data = data_header + packed_data_message_ID + packed_ack_len + tempacks
 
     sock.sendto(packed_data, (host, port))
-    return
  
 def sendLogoutRequest(sock, port, host,seqnum,aUUID,sUUID):
     packed_data = b''
@@ -194,8 +187,15 @@ def sendLogoutRequest(sock, port, host,seqnum,aUUID,sUUID):
     packed_data += aUUID + sUUID+ pack(">L",0x00)
     packed_data = data_header + packed_data_message_ID + packed_data
     sock.sendto(packed_data, (host, port))
-    return
  
+ 
+ 
+def display_payload(addr, seqnum, data):
+    print("- "*25)
+    print("Address: {} Sequence Number: {}".format(addr, seqnum))
+    print("Payload:")
+    print(data)
+    print("- "*25) 
 
 '''
 Session
@@ -330,16 +330,10 @@ def establishpresence(host, port, circuit_code):
     
     sendUUIDNameRequest(sock, port, host, 4,aUUID)
 
-    i = 0
-    trusted_count = 0
-    ackable = 0
-    trusted_and_ackable = 0
     ack_need_list_changed = False
     seqnum = 5
     lastPingSent = 0 
     trusted = 0
-    
-    seqnumLast = 0
 
     logout_flag = False
 
@@ -351,14 +345,12 @@ def establishpresence(host, port, circuit_code):
 
             seqnum += 1
 
-        i += 1
-
         packetReceiver.pollSocketReceive()
         data = packetReceiver.receivedData 
         addr = packetReceiver.receivedAddress
         
-        t = datetime.now()
-        t.strftime("%H:%M:%S")
+        if DEBUG_ENABLE:
+          display_payload(addr, seqnum, data)
 
         if not data:
             print("Client has exited!")
@@ -381,14 +373,12 @@ def establishpresence(host, port, circuit_code):
                         myentry = packetdictionary[("Fixed" , "0x"+ByteToHex(ID[0:4]).replace(' ', ''))]
                         if myentry[1] == "Trusted":
                             trusted += 1;
-                        ti = "%02d:%02d:%02d.%06d" % (t.hour,t.minute,t.second,t.microsecond)
 
                     else:
                
                         myentry = packetdictionary[("Low",int(ByteToHex(ID[2:4]).replace(' ', ''),16))]
                         if myentry[1] == "Trusted":
                             trusted += 1;
-                        ti = "%02d:%02d:%02d.%06d" % (t.hour,t.minute,t.second,t.microsecond)
 
                         if myentry[0] == "UUIDNameReply":
                             pass
@@ -466,7 +456,6 @@ def establishpresence(host, port, circuit_code):
                     myentry = packetdictionary[("Medium", int(ByteToHex(ID[1:2]).replace(' ', ''),16))]
                     if myentry[1] == "Trusted":
                         trusted += 1;
-                    ti = "%02d:%02d:%02d.%06d" % (t.hour,t.minute,t.second,t.microsecond)
 
             else:
    
@@ -483,16 +472,12 @@ def establishpresence(host, port, circuit_code):
                             lastPingSent = 0
      
                     if myentry[1] == "Trusted":
-                        trusted += 1;   
-                    ti = "%02d:%02d:%02d.%06d" % (t.hour,t.minute,t.second,t.microsecond)
+                        trusted += 1;
 
     agentUUID = uuid.UUID(result["agent_id"]).bytes
     sessionUUID = uuid.UUID(result["session_id"]).bytes
     sendLogoutRequest(sock, port, host,seqnum,agentUUID,sessionUUID) 
     sock.close()
-    print ("final number of trusted messages ={}".format(trusted_count) )
- 
-    return
 
 #********
 #  Main
