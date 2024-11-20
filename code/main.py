@@ -93,9 +93,8 @@ def scheduleacknowledgemessage(data):
     else:
         ID = data[1:5]
 
-        if (ord(chr(data[0]))&0x40) & 0x80: 
-          ID = zero_decode_ID(ID)
-          ack_need_list.append(unpack(">L",ID)[0])
+        if (ord(chr(data[0]))&0x40) & 0x80: ID = zero_decode_ID(ID)
+        ack_need_list.append(unpack(">L",ID)[0])
  
 def packacks():
     acksequence = b''
