@@ -253,7 +253,7 @@ Responsible for receiving packets
 class PacketReceiver():
 
     def __init__(self, sock): 
-        self.BUFFER_SIZE        = 65507
+        self.BUFFER_SIZE        = 4096
         self.receivedData       = None
         self.receivedAddress    = None
         self.sock               = sock
@@ -269,7 +269,7 @@ class PacketDecoder():
     pass 
 
 '''
-Responsible for Handling packets
+Responsible for Handling incoming packets and generating a response.
 1 Packet Handler per PacketProcessor
 '''
 class PacketHandler():
@@ -285,9 +285,12 @@ class PacketHandler():
         # Stateful
         self.connectionInitialized = False
         self.presenceEstablished   = False
+        self.agentUpdated          = False 
+        self.nameRequested         = False
+        self.aUUID                 = None
         
     '''
-    Initialize connection to the sim
+    SRP: Initialize connection to the sim
     '''
     def initializeConnection(self):
       # archived note: "Sending packet UseCircuitCode <-- Inits the connection to the sim."
@@ -298,7 +301,7 @@ class PacketHandler():
 
     
     '''
-    Establish sim presence
+    SRP: Establish sim presence
     '''
     def establishAgentPresence(self):
       # archived note: "ISending packet CompleteAgentMovement <-- establishes the agent's presence"
@@ -307,7 +310,56 @@ class PacketHandler():
       
       self.presenceEstablished = True 
     
-    
+    '''
+    SRP: Send agent update
+    '''
+    def sendAgentUpdate(self):
+        CURRENT_SEQ = 3
+        tempacks = packacks()
+        del ack_need_list[:]
+        if tempacks == "": 
+            flags = 0x00
+        else:
+            flags = 0x10
+     
+        data_header = pack('>BLB', flags,CURRENT_SEQ,0x00)
+        packed_data_message_ID = pack('>B',0x04)
+        packed_data_ID = uuid.UUID(result["agent_id"]).bytes + uuid.UUID(result["session_id"]).bytes
+        packed_data_QuatRots = pack('<ffff', 0.0,0.0,0.0,0.0)+pack('<ffff', 0.0,0.0,0.0,0.0)  
+        packed_data_State = pack('<B', 0x00)
+        packed_data_Camera = pack('<fff', 0.0,0.0,0.0)+pack('<fff', 0.0,0.0,0.0)+pack('<fff', 0.0,0.0,0.0)+pack('<fff', 0.0,0.0,0.0)
+        packed_data_Flags = pack('<fLB', 0.0,0x00,0x00)
+     
+        encoded_packed_data = zero_encode(packed_data_message_ID+packed_data_ID+packed_data_QuatRots+packed_data_State+packed_data_Camera+packed_data_Flags)
+     
+        #these two are bad: 
+        print(type(encoded_packed_data))
+        print(type(tempacks))
+        packed_data = data_header + encoded_packed_data + tempacks
+
+        self.sock.sendto(packed_data, (self.host, self.port))
+        self.aUUID = [result["agent_id"]]
+       
+       
+    '''
+    SRP: Send a UUID name request
+    '''    
+    def sendUUIDNameRequest(self):
+        CURRENT_SEQ = 4
+        packed_data = b''
+        fix_ID = int("ffff0000",16)+ 235
+
+        data_header = pack('>BLB', 0x00,CURRENT_SEQ,0x00) 
+
+        for x in self.aUUID:
+            packed_data += uuid.UUID(x).bytes
+
+        packed_data += pack("L",fix_ID) + pack(">B",len(self.aUUID)) + packed_data
+
+        encoded_packed_data = str(packed_data).encode('latin-1')
+     
+        self.sock.sendto(encoded_packed_data, (self.host, self.port))
+   
     
 
  
@@ -315,6 +367,7 @@ def establishpresence(host, port, circuit_code):
  
     # Create a process supporting IPv4 and connectionless UDP frames. 
     # defaults socket(family=AF_Inet, type=SOCK_STREAM, proto=0, fileno=None)
+    # defaults to blocking mode.
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     
     packetReceiver = PacketReceiver(sock) 
@@ -322,13 +375,8 @@ def establishpresence(host, port, circuit_code):
  
     packetHandler.initializeConnection()
     packetHandler.establishAgentPresence()
- 
-
- 
-    sendAgentUpdate(sock, port, host, 3, result)
-    aUUID = [result["agent_id"]]
-    
-    sendUUIDNameRequest(sock, port, host, 4,aUUID)
+    packetHandler.sendAgentUpdate()
+    packetHandler.sendUUIDNameRequest()
 
     ack_need_list_changed = False
     seqnum = 5
@@ -407,9 +455,9 @@ def establishpresence(host, port, circuit_code):
                             messageSizeField = 11 + nameSizeInt + 49
                             
                             # Byte 17 of the messageSizeField (will return a 1 in this field if agent is typing on the keyboard.
-                            chatType         = data[messageSizeField-17:messageSizeField - 17 +  1] #  1 = from an agent
-                            sourceType       = data[messageSizeField-16:messageSizeField - 16 +  1] #  0 = whisper 1 = normal 2 = shout, 3 = unknown, 4 and 5 may have to do with typing?
-                            audibleType      = data[messageSizeField-15:messageSizeField - 15 +  1] #  1 = from an agent
+                            chatType         = data[messageSizeField-17:messageSizeField - 17 +  1] #  from an agent=1
+                            sourceType       = data[messageSizeField-16:messageSizeField - 16 +  1] #  whisper=0, normal=1, shout=2, unknown=3, 4 and 5 may have to do with typing?
+                            audibleType      = data[messageSizeField-15:messageSizeField - 15 +  1] #  from an agent = 1
                             
                             # Grab everything from the messageSizeField up to the end of the string.
                             receivedChat = ByteToHex(data[messageSizeField:]) 
@@ -417,7 +465,7 @@ def establishpresence(host, port, circuit_code):
                             for eachletter in receivedChatList:
                               newString += chr(int(eachletter,16))
                             
-                            if (ord(sourceType) == 1):                # excludes the type of messages from agenst that are 4's and 5's (which don't have information)
+                            if (ord(sourceType) == 1) and (ord(chatType) == 1):          # excludes the type of messages from agenst that are 4's and 5's (which don't have information)
                                 print("Got Chat from simulator! Type {} {} {}     {} : {}".format(ord(chatType), ord(sourceType), ord(audibleType),name, newString ))
                                 
                                 # Response hook:
@@ -489,10 +537,11 @@ packetdictionary = makepacketdict()
  
 if "sim_ip" not in result.keys():
   print("\n\r"*3)
-  print("Warning: The login information is likely not correct.")
+  print("* "*35)
+  print("WARNING: The login information is likely not correct.")
   print("         username or password could be wrong.")
   print("")
-  
+  print("* "*35)
   
 myhost = result["sim_ip"]
 myport = result["sim_port"]
