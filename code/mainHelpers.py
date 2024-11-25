@@ -169,6 +169,7 @@ def HexToByte( hexStr ):
     
 
 '''
+These links appear to be deprecated as of 11-25-2024 (perhaps available in the internet archives?)
  From http://aspn.activestate.com/ASPN/Cookbook/Python/Recipe/510399
  From http://aspn.activestate.com/ASPN/Cookbook/Python/Recipe/510399
 '''

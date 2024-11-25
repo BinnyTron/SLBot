@@ -265,7 +265,60 @@ Responsible for decoding packets
 1 Packet Decoder per PacketProcessor
 '''
 class PacketDecoder():
-    pass 
+
+    def __init__(self,data):
+        self.data = data
+        
+        self.ID       = None
+        
+        # Message Priorities (as high, medium, and low in message template.) 
+        self.cond_0   = False
+        self.cond_1   = False 
+        self.cond_2   = False
+        
+        # Message type field (the first dictionary entry in messages_template.msg)
+        self.messageType     = None
+        self.messageTypeName = ""
+    
+    '''
+    If bit 7 is set, then use zero decode (returns string) otherwise returns integer
+    '''
+    def decodePacket(self):
+        self.ID = self.data[6:12]
+        if ord(chr(self.data[0]))&0x80:  
+          self.ID = zero_decode_ID(self.data[6:12])
+
+        #print("Decoded as: {}".format(type(self.ID)))
+        self.cond_0   = False
+        self.cond_1   = False 
+        self.cond_2   = False
+        
+        if self.ID[0] == ord(b'\xFF'):      # Not-High
+          self.cond_0 = True
+          if self.ID[1] == ord(b'\xFF'):    # Not-Medium
+            self.cond_1 = True
+            if self.ID[2] == ord(b'\xFF'):  # Low, Fixed 
+              self.cond_2 = True
+              self.messageType     = packetdictionary[("Fixed" , "0x"+ByteToHex(self.ID[0:4]).replace(' ', ''))]
+            else:                           # Low, Non-Fixed
+              self.messageType     = packetdictionary[("Low",int(ByteToHex(self.ID[2:4]).replace(' ', ''),16))]
+              self.messageTypeName = self.messageType[0]
+        else:
+          self.messageType = packetdictionary[("High", int(self.ID[0]))]
+          self.messageTypeName = self.messageType[0]    
+              
+              
+              
+    def debugID(self):
+
+        print("packetDecoder ID: [2]d'{} {} [1]d'{} {} [0]d'{} {}".format( self.ID[2]  , type(self.ID[2]), 
+                                                                           self.ID[1]  , type(self.ID[1]), 
+                                                                           self.ID[0]  , type(self.ID[0])
+                                                           ) 
+                                                        )
+                                                        
+                                                        
+
 
 '''
 Responsible for Handling incoming packets and generating a response.
@@ -321,6 +374,8 @@ class PacketHandler():
         else:
             flags = 0x10
      
+        # Refactoring needed? Too many lines going on here. "Long Method"
+        # Use Extract Method.
         data_header = pack('>BLB', flags,CURRENT_SEQ,0x00)
         packed_data_message_ID = pack('>B',0x04)
         packed_data_ID = uuid.UUID(result["agent_id"]).bytes + uuid.UUID(result["session_id"]).bytes
@@ -361,7 +416,8 @@ class PacketHandler():
    
     
 
- 
+# Refactoring needed? Too many lines going on here. "Bloating"
+# What is "Presence" and why is it needed?
 def establishpresence(host, port, circuit_code):
  
     # Create a process supporting IPv4 and connectionless UDP frames. 
@@ -380,7 +436,6 @@ def establishpresence(host, port, circuit_code):
     ack_need_list_changed = False
     seqnum = 5
     lastPingSent = 0 
-    trusted = 0
 
     logout_flag = False
 
@@ -392,9 +447,14 @@ def establishpresence(host, port, circuit_code):
 
             seqnum += 1
 
+        # Automatic garbage collection
+        # objects are decomissioned when no longer needed. 
         packetReceiver.pollSocketReceive()
         data = packetReceiver.receivedData 
         addr = packetReceiver.receivedAddress
+        
+        packetDecoder = PacketDecoder(data)
+        packetDecoder.decodePacket()
         
         if DEBUG_ENABLE:
           display_payload(addr, seqnum, data)
@@ -404,38 +464,24 @@ def establishpresence(host, port, circuit_code):
             break
             
         else:
+            # Debug the condition fields
+            #packetDecoder.debugID()
 
-            ID = data[6:12]
-
-            if ord(chr(data[0]))&0x80:  
-                ID = zero_decode_ID(data[6:12])
- 
             if ord(chr(data[0]))&0x40:
                 scheduleacknowledgemessage(data); 
                 ack_need_list_changed = True
 
-            if ID[0] == ord(b'\xFF'):
-                if ID[1] == ord(b'\xFF'):
-                    if ID[2] == ord(b'\xFF'):
-                        myentry = packetdictionary[("Fixed" , "0x"+ByteToHex(ID[0:4]).replace(' ', ''))]
-                        if myentry[1] == "Trusted":
-                            trusted += 1;
-
+            if packetDecoder.cond_0 == True:
+                if packetDecoder.cond_1 == True:
+                    if packetDecoder.cond_2 == True:
+                        myentry = packetDecoder.messageType
                     else:
-               
-                        myentry = packetdictionary[("Low",int(ByteToHex(ID[2:4]).replace(' ', ''),16))]
-                        if myentry[1] == "Trusted":
-                            trusted += 1;
 
-                        if myentry[0] == "UUIDNameReply":
-                            pass
-
-                        elif myentry[0] == "RegionHandshake":
+                        if packetDecoder.messageTypeName == "RegionHandshake":
                             sendRegionHandshakeReply(sock, port, host, seqnum,result["agent_id"],result["session_id"])
                             seqnum += 1
-                          
-                        #----------------------------------------------------------------------------
-                        if myentry[0] == "ChatFromSimulator":
+
+                        if packetDecoder.messageTypeName == "ChatFromSimulator":
 
                             newString = ""
 
@@ -498,18 +544,12 @@ def establishpresence(host, port, circuit_code):
                             #logout on command (logout softly.)
                             if newString.find("secretlogoutmessage") != -1:
                                 logout_flag = True
-  
-                else:
-                    myentry = packetdictionary[("Medium", int(ByteToHex(ID[1:2]).replace(' ', ''),16))]
-                    if myentry[1] == "Trusted":
-                        trusted += 1;
 
             else:
    
-                if int(ID[0]) >= 1 and int(ID[0]) <=30:
+                if int(packetDecoder.ID[0]) >= 1 and int(packetDecoder.ID[0]) <=30:
 
-                    myentry = packetdictionary[("High", int(ID[0]))]
-                    if myentry[0] == "StartPingCheck": 
+                    if packetDecoder.messageTypeName == "StartPingCheck": 
                         print("Starting Ping Check... {}".format(lastPingSent))
                         sendCompletePingCheck(sock, port, host, seqnum,data,lastPingSent)
                         lastPingSent += 1
@@ -517,9 +557,7 @@ def establishpresence(host, port, circuit_code):
 
                         if lastPingSent > 255: 
                             lastPingSent = 0
-     
-                    if myentry[1] == "Trusted":
-                        trusted += 1;
+
 
     agentUUID = uuid.UUID(result["agent_id"]).bytes
     sessionUUID = uuid.UUID(result["session_id"]).bytes
