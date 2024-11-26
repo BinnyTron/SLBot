@@ -329,10 +329,10 @@ class PacketHandler():
     def __init__(self, sock, host, port, circuit_code):
     
         # Aggregates
-        self.sock         = sock
-        self.host         = host 
-        self.port         = port 
-        self.circuit_code = circuit_code
+        self.sock                  = sock
+        self.host                  = host 
+        self.port                  = port 
+        self.circuit_code          = circuit_code
         
         # Stateful
         self.connectionInitialized = False
@@ -340,6 +340,14 @@ class PacketHandler():
         self.agentUpdated          = False 
         self.nameRequested         = False
         self.aUUID                 = None
+        
+        self.PacketDecoder         = None
+        self.data                  = None
+        
+        self.lastPingSent          = 0
+        self.seqnum                = 0
+        
+        self.logout_flag           = False
         
     '''
     SRP: Initialize connection to the sim
@@ -413,8 +421,88 @@ class PacketHandler():
         encoded_packed_data = str(packed_data).encode('latin-1')
      
         self.sock.sendto(encoded_packed_data, (self.host, self.port))
-   
-    
+        
+    def sendRegionHandshake(self):
+        sendRegionHandshakeReply(self.sock, self.port, self.host, self.seqnum,result["agent_id"],result["session_id"])
+        self.seqnum += 1 
+        
+    def handleChatFromSimulator(self):
+
+        newString = ""
+
+        nameSizeHex = self.data[10]                     # The 11th byte is the size of the name.
+        nameSizeInt = nameSizeHex                       # Converted namesize to an integer
+        
+        name = ByteToHex(self.data[11:nameSizeInt+11])  # Grab the name
+        name = name.split()                             # split the name update
+        for eachLetter in name:                         # convert to a string.
+            newString += chr(int(eachLetter,16))
+            
+        name = newString
+
+        newString = ""
+
+        messageSizeField = 11 + nameSizeInt + 49
+        
+        # Byte 17 of the messageSizeField (will return a 1 in this field if agent is typing on the keyboard.
+        chatType         = self.data[messageSizeField-17:messageSizeField - 17 +  1] #  from an agent=1
+        sourceType       = self.data[messageSizeField-16:messageSizeField - 16 +  1] #  whisper=0, normal=1, shout=2, unknown=3, 4 and 5 may have to do with typing?
+        audibleType      = self.data[messageSizeField-15:messageSizeField - 15 +  1] #  from an agent = 1
+        
+        # Grab everything from the messageSizeField up to the end of the string.
+        receivedChat = ByteToHex(self.data[messageSizeField:]) 
+        receivedChatList = receivedChat.split()
+        for eachletter in receivedChatList:
+          newString += chr(int(eachletter,16))
+        
+        if (ord(sourceType) == 1) and (ord(chatType) == 1):          # excludes the type of messages from agenst that are 4's and 5's (which don't have information)
+            print("Got Chat from simulator! Type {} {} {}     {} : {}".format(ord(chatType), ord(sourceType), ord(audibleType),name, newString ))
+            
+            # Response hook:
+            text = newString
+            response = "This is my response hook, please hook in a string."
+
+            nameAsList = name.split()
+            name = nameAsList[0]
+            responseString = name + ", " + response
+            print("Sending response from generateResponseString: {}".format(responseString) )
+
+            tmpData = pack('>BLBL',0x40,self.seqnum,0x00,0xffff0050) + uuid.UUID(result["agent_id"]).bytes + uuid.UUID(result["session_id"]).bytes +  stringToData(responseString)
+            
+            if RESPONSE_ENABLE == True:
+                sock.sendto(tmpData, (self.host, self.port))
+
+        # logout on command (logout softly, when typed in chat.)
+        if newString.find("secretLogoutCode") != -1:
+            self.logout_flag = True
+    '''
+    SRP: general response
+         ToDo: Cover all cases.
+    '''
+    def respondToPacket(self,sequenceNumerAsMutable, lastPingSentAsMutable):
+        # Mutables, pass by reference
+        self.seqnum       = sequenceNumerAsMutable[0]
+        self.lastPingSent = lastPingSentAsMutable[0]
+        
+        self.data = self.PacketDecoder.data
+        
+        if self.PacketDecoder.cond_0 == True:
+            if self.PacketDecoder.cond_1 == True:
+                if self.PacketDecoder.cond_2 == True:
+                    pass
+                else:
+                    if self.PacketDecoder.messageTypeName == "RegionHandshake":
+                        self.sendRegionHandshake()
+                        
+                    if self.PacketDecoder.messageTypeName == "ChatFromSimulator":
+                        self.handleChatFromSimulator()
+        else:
+            pass
+            
+        # Mutables, out.
+        sequenceNumerAsMutable[0] = self.seqnum
+        lastPingSentAsMutable[0]  = self.lastPingSent
+        
 
 # Refactoring needed? Too many lines going on here. "Bloating"
 # What is "Presence" and why is it needed?
@@ -434,18 +522,17 @@ def establishpresence(host, port, circuit_code):
     packetHandler.sendUUIDNameRequest()
 
     ack_need_list_changed = False
-    seqnum = 5
-    lastPingSent = 0 
+    seqnum       = [5]
+    lastPingSent = [0] 
 
-    logout_flag = False
+    while not packetHandler.logout_flag:
 
-    while not logout_flag:
         if ack_need_list_changed:
             ack_need_list_changed = False
-            seqnum += 1
-            sendPacketAck(sock, port, host,seqnum)
+            seqnum[0] += 1
+            sendPacketAck(sock, port, host,seqnum[0])
 
-            seqnum += 1
+            seqnum[0] += 1
 
         # Automatic garbage collection
         # objects are decomissioned when no longer needed. 
@@ -456,8 +543,11 @@ def establishpresence(host, port, circuit_code):
         packetDecoder = PacketDecoder(data)
         packetDecoder.decodePacket()
         
+        packetHandler.PacketDecoder = packetDecoder
+        packetHandler.respondToPacket(seqnum,lastPingSent)
+        
         if DEBUG_ENABLE:
-          display_payload(addr, seqnum, data)
+          display_payload(addr, seqnum[0], data)
 
         if not data:
             print("Client has exited!")
@@ -474,94 +564,24 @@ def establishpresence(host, port, circuit_code):
             if packetDecoder.cond_0 == True:
                 if packetDecoder.cond_1 == True:
                     if packetDecoder.cond_2 == True:
-                        myentry = packetDecoder.messageType
+                        pass
                     else:
-
-                        if packetDecoder.messageTypeName == "RegionHandshake":
-                            sendRegionHandshakeReply(sock, port, host, seqnum,result["agent_id"],result["session_id"])
-                            seqnum += 1
-
-                        if packetDecoder.messageTypeName == "ChatFromSimulator":
-
-                            newString = ""
-
-                            nameSizeHex = data[10]                     # The 11th byte is the size of the name.
-                            nameSizeInt = nameSizeHex                  # Converted namesize to an integer
-                            
-                            name = ByteToHex(data[11:nameSizeInt+11])  # Grab the name
-                            name = name.split()                        # split the name update
-                            for eachLetter in name:                    # convert to a string.
-                                newString += chr(int(eachLetter,16))
-                                
-                            name = newString
-
-                            newString = ""
-
-                            messageSizeField = 11 + nameSizeInt + 49
-                            
-                            # Byte 17 of the messageSizeField (will return a 1 in this field if agent is typing on the keyboard.
-                            chatType         = data[messageSizeField-17:messageSizeField - 17 +  1] #  from an agent=1
-                            sourceType       = data[messageSizeField-16:messageSizeField - 16 +  1] #  whisper=0, normal=1, shout=2, unknown=3, 4 and 5 may have to do with typing?
-                            audibleType      = data[messageSizeField-15:messageSizeField - 15 +  1] #  from an agent = 1
-                            
-                            # Grab everything from the messageSizeField up to the end of the string.
-                            receivedChat = ByteToHex(data[messageSizeField:]) 
-                            receivedChatList = receivedChat.split()
-                            for eachletter in receivedChatList:
-                              newString += chr(int(eachletter,16))
-                            
-                            if (ord(sourceType) == 1) and (ord(chatType) == 1):          # excludes the type of messages from agenst that are 4's and 5's (which don't have information)
-                                print("Got Chat from simulator! Type {} {} {}     {} : {}".format(ord(chatType), ord(sourceType), ord(audibleType),name, newString ))
-                                
-                                # Response hook:
-                                text = newString
-                                response = "This is my response hook, please hook in a string."
-
-                                nameAsList = name.split()
-                                name = nameAsList[0]
-                                responseString = name + ", " + response
-                                print("Sending response from generateResponseString: {}".format(responseString) )
-
-                                data = pack('>BLBL',0x40,seqnum,0x00,0xffff0050) + uuid.UUID(result["agent_id"]).bytes + uuid.UUID(result["session_id"]).bytes +  stringToData(responseString)
-                                
-                                if RESPONSE_ENABLE == True:
-                                    sock.sendto(data, (host, port))
-                            
-                            
-                            # See message_template.msg
-                            # Something in this is incorrect because we can receive the start of a message on byte 49 and not 68
-                            # Receiving chat does return different status flags (So we can know whether someone is typing, or something else.)
-                            # {	FromName		Variable 1	}  (First Byte determines number of bytes that follow)
-                            # {	SourceID		LLUUID		}  16 bytes wide
-                            # {	OwnerID			LLUUID		}  16 bytes wide
-                            # {	SourceType		U8			}  8 bits 
-                            # {	ChatType		U8			}  8 bits
-                            # {	Audible			U8			}  8 bit_length
-                            # {	Position		LLVector3	}  12 bytes wide
-                            # {	Message			Variable 2	}  (First two bytes determine number of bytes that follow)
-                            #----------------------------------------------------------------------------
-
-                            #logout on command (logout softly.)
-                            if newString.find("secretlogoutmessage") != -1:
-                                logout_flag = True
-
+                        pass
             else:
-   
                 if int(packetDecoder.ID[0]) >= 1 and int(packetDecoder.ID[0]) <=30:
-
                     if packetDecoder.messageTypeName == "StartPingCheck": 
                         print("Starting Ping Check... {}".format(lastPingSent))
-                        sendCompletePingCheck(sock, port, host, seqnum,data,lastPingSent)
-                        lastPingSent += 1
-                        seqnum += 1
+                        sendCompletePingCheck(sock, port, host, seqnum[0],data,lastPingSent[0])
+                        lastPingSent[0] += 1
+                        seqnum[0] += 1
 
-                        if lastPingSent > 255: 
-                            lastPingSent = 0
+                        if lastPingSent[0] > 255: 
+                            lastPingSent[0] = 0
 
 
     agentUUID = uuid.UUID(result["agent_id"]).bytes
     sessionUUID = uuid.UUID(result["session_id"]).bytes
-    sendLogoutRequest(sock, port, host,seqnum,agentUUID,sessionUUID) 
+    sendLogoutRequest(sock, port, host,seqnum[0],agentUUID,sessionUUID) 
     sock.close()
 
 #********
