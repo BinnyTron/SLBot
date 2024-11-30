@@ -344,10 +344,11 @@ class PacketHandler():
         self.PacketDecoder         = None
         self.data                  = None
         
-        self.lastPingSent          = 0
-        self.seqnum                = 0
-        
+        # default ack settings
+        self.lastPingSent          = 0        # Default to 0 
+        self.seqnum                = 5        # Default to 5, due to login sequence.
         self.logout_flag           = False
+        self.ack_need_list_changed = False
         
     '''
     SRP: Initialize connection to the sim
@@ -479,12 +480,17 @@ class PacketHandler():
     SRP: general response
          ToDo: Cover all cases.
     '''
-    def respondToPacket(self,sequenceNumerAsMutable, lastPingSentAsMutable):
-        # Mutables, pass by reference
-        self.seqnum       = sequenceNumerAsMutable[0]
-        self.lastPingSent = lastPingSentAsMutable[0]
-        
+    def respondToPacket(self):
+
         self.data = self.PacketDecoder.data
+
+
+        # Debug the condition fields
+        #self.PacketDecoder.debugID()
+
+        if ord(chr(self.data[0]))&0x40:
+            scheduleacknowledgemessage(self.data); 
+            self.ack_need_list_changed = True
         
         if self.PacketDecoder.cond_0 == True:
             if self.PacketDecoder.cond_1 == True:
@@ -497,11 +503,36 @@ class PacketHandler():
                     if self.PacketDecoder.messageTypeName == "ChatFromSimulator":
                         self.handleChatFromSimulator()
         else:
-            pass
-            
-        # Mutables, out.
-        sequenceNumerAsMutable[0] = self.seqnum
-        lastPingSentAsMutable[0]  = self.lastPingSent
+            if int(self.PacketDecoder.ID[0]) >= 1 and int(self.PacketDecoder.ID[0]) <=30:
+                if self.PacketDecoder.messageTypeName == "StartPingCheck": 
+                    print("Starting Ping Check... {}".format(self.lastPingSent))
+                    sendCompletePingCheck(self.sock, self.port, self.host, self.seqnum, self.data, self.lastPingSent)
+                    self.lastPingSent += 1
+                    self.seqnum += 1
+
+                    if self.lastPingSent > 255: 
+                        self.lastPingSent = 0
+ 
+    def sendPacketAck(self):
+        currentsequence = self.seqnum
+        tempacks = packacks()
+        templen = len(ack_need_list)
+        del ack_need_list[:]
+        data_header = pack('>BLB',0x00,currentsequence,0x00) 
+        packed_data_message_ID = pack('>L',0xFFFFFFFB)
+        packed_ack_len = pack('>B',templen)
+     
+        packed_data = data_header + packed_data_message_ID + packed_ack_len + tempacks
+
+        self.sock.sendto(packed_data, (self.host, self.port)) 
+        
+        
+    def checkAckRequest(self):
+        if self.ack_need_list_changed:
+            self.ack_need_list_changed = False
+            self.seqnum += 1
+            self.sendPacketAck()
+            self.seqnum += 1
         
 
 # Refactoring needed? Too many lines going on here. "Bloating"
@@ -521,18 +552,9 @@ def establishpresence(host, port, circuit_code):
     packetHandler.sendAgentUpdate()
     packetHandler.sendUUIDNameRequest()
 
-    ack_need_list_changed = False
-    seqnum       = [5]
-    lastPingSent = [0] 
-
     while not packetHandler.logout_flag:
 
-        if ack_need_list_changed:
-            ack_need_list_changed = False
-            seqnum[0] += 1
-            sendPacketAck(sock, port, host,seqnum[0])
-
-            seqnum[0] += 1
+        packetHandler.checkAckRequest()
 
         # Automatic garbage collection
         # objects are decomissioned when no longer needed. 
@@ -544,44 +566,18 @@ def establishpresence(host, port, circuit_code):
         packetDecoder.decodePacket()
         
         packetHandler.PacketDecoder = packetDecoder
-        packetHandler.respondToPacket(seqnum,lastPingSent)
+        packetHandler.respondToPacket()
         
         if DEBUG_ENABLE:
-          display_payload(addr, seqnum[0], data)
+          display_payload(addr, packetHandler.seqnum, data)
 
         if not data:
             print("Client has exited!")
             break
-            
-        else:
-            # Debug the condition fields
-            #packetDecoder.debugID()
-
-            if ord(chr(data[0]))&0x40:
-                scheduleacknowledgemessage(data); 
-                ack_need_list_changed = True
-
-            if packetDecoder.cond_0 == True:
-                if packetDecoder.cond_1 == True:
-                    if packetDecoder.cond_2 == True:
-                        pass
-                    else:
-                        pass
-            else:
-                if int(packetDecoder.ID[0]) >= 1 and int(packetDecoder.ID[0]) <=30:
-                    if packetDecoder.messageTypeName == "StartPingCheck": 
-                        print("Starting Ping Check... {}".format(lastPingSent))
-                        sendCompletePingCheck(sock, port, host, seqnum[0],data,lastPingSent[0])
-                        lastPingSent[0] += 1
-                        seqnum[0] += 1
-
-                        if lastPingSent[0] > 255: 
-                            lastPingSent[0] = 0
-
 
     agentUUID = uuid.UUID(result["agent_id"]).bytes
     sessionUUID = uuid.UUID(result["session_id"]).bytes
-    sendLogoutRequest(sock, port, host,seqnum[0],agentUUID,sessionUUID) 
+    sendLogoutRequest(sock, port, host, packetHandler.seqnum, agentUUID, sessionUUID) 
     sock.close()
 
 #********
