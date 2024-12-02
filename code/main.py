@@ -15,9 +15,10 @@ from datetime import datetime
 from mainHelpers import *
 import random
 
+MAC            = '2C:54:91:88:C9:E3'
 username_first = "AstroTester"
-username_last = "resident" 
-password = b'p@ssw0rd'
+username_last  = "resident" 
+password       = b'p@ssw0rd'
 
 # Response is gated here (set to true for bot to chat back.) 
 RESPONSE_ENABLE = False
@@ -235,7 +236,78 @@ A session has a packet processor.
 1 Avatar per session instance.
 '''
 class Session(): 
-    pass 
+
+    def __init__(self,username_first,username_last, password, MAC):
+      self.username_first = username_first
+      self.username_last  = username_last 
+      self.password       = password 
+      self.MAC            = MAC
+
+      self.result         = {}
+      self.host           = None
+      self.port           = None
+      self.circuit_code   = None
+      
+      
+      
+    def login(self):
+
+        self.result = login(self.username_first,self.username_last, self.password, self.MAC)
+
+        if "sim_ip" not in self.result.keys():
+          print("\n\r"*3)
+          print("* "*35)
+          print("WARNING: The login information is likely not correct.")
+          print("         username or password could be wrong.")
+          print("")
+          print("* "*35)
+          
+        self.host         = self.result["sim_ip"]
+        self.port         = self.result["sim_port"]
+        self.circuit_code = self.result["circuit_code"]
+
+        # Create a process supporting IPv4 and connectionless UDP frames. 
+        # defaults socket(family=AF_Inet, type=SOCK_STREAM, proto=0, fileno=None)
+        # defaults to blocking mode.
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        
+        packetReceiver = PacketReceiver(sock) 
+        packetHandler  = PacketHandler(sock, self.host, self.port, self.circuit_code, self.result)
+     
+        packetHandler.initializeConnection()
+        packetHandler.establishAgentPresence()
+        packetHandler.sendAgentUpdate()
+        packetHandler.sendUUIDNameRequest()
+
+        while not packetHandler.logout_flag:
+
+            packetHandler.checkAckRequest()
+
+            # Automatic garbage collection
+            # objects are decomissioned when no longer needed. 
+            packetReceiver.pollSocketReceive()
+            data = packetReceiver.receivedData 
+            addr = packetReceiver.receivedAddress
+            
+            packetDecoder = PacketDecoder(data)
+            packetDecoder.decodePacket()
+            
+            packetHandler.PacketDecoder = packetDecoder
+            packetHandler.respondToPacket()
+            
+            if DEBUG_ENABLE:
+              display_payload(addr, packetHandler.seqnum, data)
+
+            if not data:
+                print("Client has exited!")
+                break
+
+        agentUUID = uuid.UUID(self.result["agent_id"]).bytes
+        sessionUUID = uuid.UUID(self.result["session_id"]).bytes
+        sendLogoutRequest(sock, self.port, self.host, packetHandler.seqnum, agentUUID, sessionUUID) 
+        sock.close()
+
+        cap_out = get_caps(self.result,"seed_capability", ["ChatSessionRequest"])
 
 '''
 Responsible for packet traffic
@@ -326,7 +398,7 @@ Responsible for Handling incoming packets and generating a response.
 '''
 class PacketHandler():
 
-    def __init__(self, sock, host, port, circuit_code):
+    def __init__(self, sock, host, port, circuit_code,result):
     
         # Aggregates
         self.sock                  = sock
@@ -350,12 +422,15 @@ class PacketHandler():
         self.logout_flag           = False
         self.ack_need_list_changed = False
         
+        # Stub
+        self.result                = result
+        
     '''
     SRP: Initialize connection to the sim
     '''
     def initializeConnection(self):
       # archived note: "Sending packet UseCircuitCode <-- Inits the connection to the sim."
-      data = pack('>BLBL',0x00,0x01,00,0xffff0003) + pack('<L',self.circuit_code) + uuid.UUID(result["session_id"]).bytes+uuid.UUID(result["agent_id"]).bytes
+      data = pack('>BLBL',0x00,0x01,00,0xffff0003) + pack('<L',self.circuit_code) + uuid.UUID(self.result["session_id"]).bytes+uuid.UUID(self.result["agent_id"]).bytes
       self.sock.sendto(data, (self.host, self.port))
       
       self.connectionInitialized = True
@@ -366,7 +441,7 @@ class PacketHandler():
     '''
     def establishAgentPresence(self):
       # archived note: "ISending packet CompleteAgentMovement <-- establishes the agent's presence"
-      data = pack('>BLBL',0x00,0x02,00,0xffff00f9) + uuid.UUID(result["agent_id"]).bytes + uuid.UUID(result["session_id"]).bytes + pack('<L', self.circuit_code)
+      data = pack('>BLBL',0x00,0x02,00,0xffff00f9) + uuid.UUID(self.result["agent_id"]).bytes + uuid.UUID(self.result["session_id"]).bytes + pack('<L', self.circuit_code)
       self.sock.sendto(data, (self.host, self.port))
       
       self.presenceEstablished = True 
@@ -387,7 +462,7 @@ class PacketHandler():
         # Use Extract Method.
         data_header = pack('>BLB', flags,CURRENT_SEQ,0x00)
         packed_data_message_ID = pack('>B',0x04)
-        packed_data_ID = uuid.UUID(result["agent_id"]).bytes + uuid.UUID(result["session_id"]).bytes
+        packed_data_ID = uuid.UUID(self.result["agent_id"]).bytes + uuid.UUID(self.result["session_id"]).bytes
         packed_data_QuatRots = pack('<ffff', 0.0,0.0,0.0,0.0)+pack('<ffff', 0.0,0.0,0.0,0.0)  
         packed_data_State = pack('<B', 0x00)
         packed_data_Camera = pack('<fff', 0.0,0.0,0.0)+pack('<fff', 0.0,0.0,0.0)+pack('<fff', 0.0,0.0,0.0)+pack('<fff', 0.0,0.0,0.0)
@@ -401,7 +476,7 @@ class PacketHandler():
         packed_data = data_header + encoded_packed_data + tempacks
 
         self.sock.sendto(packed_data, (self.host, self.port))
-        self.aUUID = [result["agent_id"]]
+        self.aUUID = [self.result["agent_id"]]
        
        
     '''
@@ -424,7 +499,7 @@ class PacketHandler():
         self.sock.sendto(encoded_packed_data, (self.host, self.port))
         
     def sendRegionHandshake(self):
-        sendRegionHandshakeReply(self.sock, self.port, self.host, self.seqnum,result["agent_id"],result["session_id"])
+        sendRegionHandshakeReply(self.sock, self.port, self.host, self.seqnum,self.result["agent_id"],self.result["session_id"])
         self.seqnum += 1 
         
     def handleChatFromSimulator(self):
@@ -468,7 +543,7 @@ class PacketHandler():
             responseString = name + ", " + response
             print("Sending response from generateResponseString: {}".format(responseString) )
 
-            tmpData = pack('>BLBL',0x40,self.seqnum,0x00,0xffff0050) + uuid.UUID(result["agent_id"]).bytes + uuid.UUID(result["session_id"]).bytes +  stringToData(responseString)
+            tmpData = pack('>BLBL',0x40,self.seqnum,0x00,0xffff0050) + uuid.UUID(self.result["agent_id"]).bytes + uuid.UUID(self.result["session_id"]).bytes +  stringToData(responseString)
             
             if RESPONSE_ENABLE == True:
                 sock.sendto(tmpData, (self.host, self.port))
@@ -535,74 +610,18 @@ class PacketHandler():
             self.seqnum += 1
         
 
-# Refactoring needed? Too many lines going on here. "Bloating"
-# What is "Presence" and why is it needed?
-def establishpresence(host, port, circuit_code):
- 
-    # Create a process supporting IPv4 and connectionless UDP frames. 
-    # defaults socket(family=AF_Inet, type=SOCK_STREAM, proto=0, fileno=None)
-    # defaults to blocking mode.
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    
-    packetReceiver = PacketReceiver(sock) 
-    packetHandler  = PacketHandler(sock, host, port, circuit_code)
- 
-    packetHandler.initializeConnection()
-    packetHandler.establishAgentPresence()
-    packetHandler.sendAgentUpdate()
-    packetHandler.sendUUIDNameRequest()
-
-    while not packetHandler.logout_flag:
-
-        packetHandler.checkAckRequest()
-
-        # Automatic garbage collection
-        # objects are decomissioned when no longer needed. 
-        packetReceiver.pollSocketReceive()
-        data = packetReceiver.receivedData 
-        addr = packetReceiver.receivedAddress
-        
-        packetDecoder = PacketDecoder(data)
-        packetDecoder.decodePacket()
-        
-        packetHandler.PacketDecoder = packetDecoder
-        packetHandler.respondToPacket()
-        
-        if DEBUG_ENABLE:
-          display_payload(addr, packetHandler.seqnum, data)
-
-        if not data:
-            print("Client has exited!")
-            break
-
-    agentUUID = uuid.UUID(result["agent_id"]).bytes
-    sessionUUID = uuid.UUID(result["session_id"]).bytes
-    sendLogoutRequest(sock, port, host, packetHandler.seqnum, agentUUID, sessionUUID) 
-    sock.close()
 
 #********
 #  Main
 #********
-MAC = '2C:54:91:88:C9:E3'
-result = login(username_first,username_last, password, MAC)
-
 packetdictionary = makepacketdict()
- 
-if "sim_ip" not in result.keys():
-  print("\n\r"*3)
-  print("* "*35)
-  print("WARNING: The login information is likely not correct.")
-  print("         username or password could be wrong.")
-  print("")
-  print("* "*35)
-  
-myhost = result["sim_ip"]
-myport = result["sim_port"]
-mycircuit_code = result["circuit_code"]
- 
-establishpresence(myhost, myport, mycircuit_code)
- 
-cap_out = get_caps(result,"seed_capability", ["ChatSessionRequest"])
+session = Session(username_first,username_last, password, MAC)
+session.login()
+
+
+
+
+
  
 '''
 Data Types:
