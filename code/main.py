@@ -29,42 +29,6 @@ outputstring = ''
 ack_need_list = []
 logoutputflag = False
 
- 
-if logoutputflag:
-    temp = sys.stdout
-    sys.stdout =open('alog.txt','w')
- 
-def login(first, last, passwd, mac):
-
-  text = passwd
-  hash_object = hashlib.md5(password)
-  md5_hash = hash_object.hexdigest()
-  passwd_md5 = '$1$' + md5_hash
-
-  uri = 'https://login.agni.lindenlab.com/cgi-bin/login.cgi'
-  s = xmlrpclib.ServerProxy(uri)
- 
-  login_details = {
-    'first': first,
-    'last': last,
-    'passwd': passwd_md5,
-    'start': 'last',
-    'major': '1',
-    'minor': '18',
-    'patch': '5',
-    'build': '3',
-    'platform': 'Win',
-    'mac': mac,
-    'options': [],
-    'user-agent': 'sl.py 0.1',
-    'id0': '',
-    'agree_to_tos': '',
-    'viewer_digest': '09d93740-8f37-c418-fbf2-2a78c7b0d1ea'
-  }
-  results = s.login_to_simulator(login_details)
-  print(results)
- 
-  return results
 
 def get_caps(results,cap_key, request_keys):
  
@@ -80,21 +44,18 @@ def get_caps(results,cap_key, request_keys):
   data = response.read()
   conn.close()
   return data
- 
-def ExtractCap(cap_result):
-  trim_xml = re.compile(r"<key>([a-zA-Z_]+)</key><string>([a-zA-Z_:/0-9-.]+)</string>")
-  new_key = trim_xml.search(cap_result).group(1)
-  new_cap = trim_xml.search(cap_result).group(2)
-  return new_key, new_cap
+
 
 def scheduleacknowledgemessage(data):
 
     if not ord(chr(data[0]))&0x40:
-        print("OOOPS! Got asked to ack a message that shouldn't be acked")
+        print("Error: Got asked to ack a message that shouldn't be acked")
     else:
         ID = data[1:5]
 
-        if (ord(chr(data[0]))&0x40) & 0x80: ID = zero_decode_ID(ID)
+        if (ord(chr(data[0]))&0x40) & 0x80: 
+          ID = zero_decode_ID(ID)
+          
         ack_need_list.append(unpack(">L",ID)[0])
  
 def packacks():
@@ -103,93 +64,7 @@ def packacks():
         acksequence += pack("<L", msgnum)
 
     return acksequence
- 
-'''
-Refer to message_template.msg
-'''
-def sendUUIDNameRequest(sock, port, host, currentsequence,aUUID):
- 
-    packed_data = b''
-    fix_ID = int("ffff0000",16)+ 235
-    data_header = pack('>BLB', 0x00,currentsequence,0x00) 
 
-    for x in aUUID:
-        packed_data += uuid.UUID(x).bytes
-
-    packed_data += pack("L",fix_ID) + pack(">B",len(aUUID)) + packed_data
-
-    encoded_packed_data = str(packed_data).encode('latin-1')
- 
-    sock.sendto(encoded_packed_data, (host, port))
- 
-def sendRegionHandshakeReply(sock, port, host, currentsequence,agentUUID,sessionUUID):
-    packed_data = ""
- 
-    low_ID = "ffff00%2x" % 149
-    data_header = pack('>BLB', 0x00,currentsequence,0x00)
-    packed_data += uuid.UUID(agentUUID).bytes+uuid.UUID(sessionUUID).bytes+ pack(">L",0x00)
-    packed_data = data_header + pack(">L",int(low_ID,16))+packed_data
-    sock.sendto(packed_data, (host, port)) 
- 
- 
- 
-def sendAgentUpdate(sock, port, host, currentsequence, result):
- 
-    tempacks = packacks()
-    del ack_need_list[:]
-    if tempacks == "": 
-        flags = 0x00
-    else:
-        flags = 0x10
- 
-    data_header = pack('>BLB', flags,currentsequence,0x00)
-    packed_data_message_ID = pack('>B',0x04)
-    packed_data_ID = uuid.UUID(result["agent_id"]).bytes + uuid.UUID(result["session_id"]).bytes
-    packed_data_QuatRots = pack('<ffff', 0.0,0.0,0.0,0.0)+pack('<ffff', 0.0,0.0,0.0,0.0)  
-    packed_data_State = pack('<B', 0x00)
-    packed_data_Camera = pack('<fff', 0.0,0.0,0.0)+pack('<fff', 0.0,0.0,0.0)+pack('<fff', 0.0,0.0,0.0)+pack('<fff', 0.0,0.0,0.0)
-    packed_data_Flags = pack('<fLB', 0.0,0x00,0x00)
- 
-    encoded_packed_data = zero_encode(packed_data_message_ID+packed_data_ID+packed_data_QuatRots+packed_data_State+packed_data_Camera+packed_data_Flags)
- 
-    #these two are bad: 
-    print(type(encoded_packed_data))
-    print(type(tempacks))
-    packed_data = data_header + encoded_packed_data + tempacks
-
-    sock.sendto(packed_data, (host, port))
- 
-def sendCompletePingCheck(sock, port, host, currentsequence,data,lastPingSent):
- 
-    data_header = pack('>BLB', 0x00,currentsequence,0x00)
-    packed_data_message_ID = pack('>B',0x02)
-    packed_data = data_header + packed_data_message_ID+pack('>B', lastPingSent)
-
-    sock.sendto(packed_data, (host, port))
- 
-def sendPacketAck(sock, port, host,currentsequence):
- 
-    tempacks = packacks()
-    templen = len(ack_need_list)
-    del ack_need_list[:]
-    data_header = pack('>BLB',0x00,currentsequence,0x00) 
-    packed_data_message_ID = pack('>L',0xFFFFFFFB)
-    packed_ack_len = pack('>B',templen)
- 
-    packed_data = data_header + packed_data_message_ID + packed_ack_len + tempacks
-
-    sock.sendto(packed_data, (host, port))
- 
-def sendLogoutRequest(sock, port, host,seqnum,aUUID,sUUID):
-    packed_data = b''
-    packed_data_message_ID = pack('>L',0xffff00fc)
-    data_header = pack('>BLB', 0x00,seqnum,0x00)
-    packed_data += aUUID + sUUID+ pack(">L",0x00)
-    packed_data = data_header + packed_data_message_ID + packed_data
-    sock.sendto(packed_data, (host, port))
- 
- 
- 
 def display_payload(addr, seqnum, data):
     print("- "*25)
     print("Address: {} Sequence Number: {}".format(addr, seqnum))
@@ -250,9 +125,38 @@ class Session():
       
       
       
+    def __sessionLogin(self):
+
+      hash_object = hashlib.md5(self.password)
+      md5_hash = hash_object.hexdigest()
+      passwd_md5 = '$1$' + md5_hash
+
+      uri = 'https://login.agni.lindenlab.com/cgi-bin/login.cgi'
+      s = xmlrpclib.ServerProxy(uri)
+     
+      login_details = {
+        'first': self.username_first,
+        'last': self.username_last,
+        'passwd': passwd_md5,
+        'start': 'last',
+        'major': '1',
+        'minor': '18',
+        'patch': '5',
+        'build': '3',
+        'platform': 'Win',
+        'mac': self.MAC,
+        'options': [],
+        'user-agent': 'sl.py 0.1',
+        'id0': '',
+        'agree_to_tos': '',
+        'viewer_digest': '09d93740-8f37-c418-fbf2-2a78c7b0d1ea'
+      }
+      results = s.login_to_simulator(login_details)
+      return results
+      
     def login(self):
 
-        self.result = login(self.username_first,self.username_last, self.password, self.MAC)
+        self.result = self.__sessionLogin()
 
         if "sim_ip" not in self.result.keys():
           print("\n\r"*3)
@@ -304,7 +208,17 @@ class Session():
 
         agentUUID = uuid.UUID(self.result["agent_id"]).bytes
         sessionUUID = uuid.UUID(self.result["session_id"]).bytes
-        sendLogoutRequest(sock, self.port, self.host, packetHandler.seqnum, agentUUID, sessionUUID) 
+
+        # --- 
+        # Send Logout Request
+        packed_data = b''
+        packed_data_message_ID = pack('>L',0xffff00fc)
+        data_header = pack('>BLB', 0x00,packetHandler.seqnum,0x00)
+        packed_data += agentUUID + sessionUUID + pack(">L",0x00)
+        packed_data = data_header + packed_data_message_ID + packed_data
+        sock.sendto(packed_data, (self.host, self.port))
+        # --- 
+        
         sock.close()
 
         cap_out = get_caps(self.result,"seed_capability", ["ChatSessionRequest"])
@@ -470,7 +384,7 @@ class PacketHandler():
      
         encoded_packed_data = zero_encode(packed_data_message_ID+packed_data_ID+packed_data_QuatRots+packed_data_State+packed_data_Camera+packed_data_Flags)
      
-        #these two are bad: 
+        #these two are bad: (Not sure what this comment refers to.) 
         print(type(encoded_packed_data))
         print(type(tempacks))
         packed_data = data_header + encoded_packed_data + tempacks
@@ -499,7 +413,12 @@ class PacketHandler():
         self.sock.sendto(encoded_packed_data, (self.host, self.port))
         
     def sendRegionHandshake(self):
-        sendRegionHandshakeReply(self.sock, self.port, self.host, self.seqnum,self.result["agent_id"],self.result["session_id"])
+        packed_data = ""
+        low_ID = "ffff00%2x" % 149
+        data_header = pack('>BLB', 0x00,currentsequence,0x00)
+        packed_data += uuid.UUID(self.result["agent_id"]).bytes+uuid.UUID(self.result["session_id"]).bytes+ pack(">L",0x00)
+        packed_data = data_header + pack(">L",int(low_ID,16))+packed_data
+        self.sock.sendto(packed_data, (self.host, self.port)) 
         self.seqnum += 1 
         
     def handleChatFromSimulator(self):
@@ -553,14 +472,14 @@ class PacketHandler():
             self.logout_flag = True
     '''
     SRP: general response
-         ToDo: Cover all cases.
+         ToDo: Implement Polymorphism. Pull from message template.
     '''
     def respondToPacket(self):
 
         self.data = self.PacketDecoder.data
 
 
-        # Debug the condition fields
+        # Debug ID fields
         #self.PacketDecoder.debugID()
 
         if ord(chr(self.data[0]))&0x40:
@@ -581,8 +500,15 @@ class PacketHandler():
             if int(self.PacketDecoder.ID[0]) >= 1 and int(self.PacketDecoder.ID[0]) <=30:
                 if self.PacketDecoder.messageTypeName == "StartPingCheck": 
                     print("Starting Ping Check... {}".format(self.lastPingSent))
-                    sendCompletePingCheck(self.sock, self.port, self.host, self.seqnum, self.data, self.lastPingSent)
+                    
+                    # -----
+                    # sendCompletePingCheck
+                    data_header = pack('>BLB', 0x00,self.seqnum,0x00)
+                    packed_data_message_ID = pack('>B',0x02)
+                    packed_data = data_header + packed_data_message_ID+pack('>B', self.lastPingSent)
+                    self.sock.sendto(packed_data, (self.host, self.port))
                     self.lastPingSent += 1
+                    # -----
                     self.seqnum += 1
 
                     if self.lastPingSent > 255: 
@@ -621,7 +547,9 @@ session.login()
 
 
 
-
+'''
+Refer to message_template.msg
+'''
  
 '''
 Data Types:
