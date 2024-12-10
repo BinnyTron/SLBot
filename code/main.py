@@ -15,6 +15,12 @@ from datetime import datetime
 from mainHelpers import *
 import random
 
+from urllib.parse import parse_qsl, urljoin, urlparse
+import http.client
+
+
+
+
 MAC            = '2C:54:91:88:C9:E3'
 username_first = "AstroTester"
 username_last  = "resident" 
@@ -29,48 +35,6 @@ outputstring = ''
 ack_need_list = []
 logoutputflag = False
 
-
-def get_caps(results,cap_key, request_keys):
- 
-  _, netloc, path, _, _, _ = urlparse(results[cap_key])
- 
-  params = "<llsd><array><string>"+ request_keys[0]+"</string></array></llsd>"
-  headers = {"content-type": "application/xml"}
-  conn = httplib.HTTPSConnection(netloc)
- 
-  conn.request("POST", path, params, headers)
-  response = conn.getresponse()
-
-  data = response.read()
-  conn.close()
-  return data
-
-
-def scheduleacknowledgemessage(data):
-
-    if not ord(chr(data[0]))&0x40:
-        print("Error: Got asked to ack a message that shouldn't be acked")
-    else:
-        ID = data[1:5]
-
-        if (ord(chr(data[0]))&0x40) & 0x80: 
-          ID = zero_decode_ID(ID)
-          
-        ack_need_list.append(unpack(">L",ID)[0])
- 
-def packacks():
-    acksequence = b''
-    for msgnum in ack_need_list:
-        acksequence += pack("<L", msgnum)
-
-    return acksequence
-
-def display_payload(addr, seqnum, data):
-    print("- "*25)
-    print("Address: {} Sequence Number: {}".format(addr, seqnum))
-    print("Payload:")
-    print(data)
-    print("- "*25) 
 
 '''
 Session
@@ -198,9 +162,6 @@ class Session():
             
             packetHandler.PacketDecoder = packetDecoder
             packetHandler.respondToPacket()
-            
-            if DEBUG_ENABLE:
-              display_payload(addr, packetHandler.seqnum, data)
 
             if not data:
                 print("Client has exited!")
@@ -220,9 +181,29 @@ class Session():
         # --- 
         
         sock.close()
-
-        cap_out = get_caps(self.result,"seed_capability", ["ChatSessionRequest"])
-
+        
+        # --- 
+        # get_caps
+        _, netloc, path, _, _, _ = urlparse(self.result["seed_capability"])
+        
+        params = "<llsd><array><string>"+ ["ChatSessionRequest"][0]+"</string></array></llsd>"
+        headers = {"content-type": "application/xml"}
+        
+        print("netloc: {}".format(netloc))
+        print("path: {}".format(path))
+        print("params: {}".format(params))
+        print("headers: {}".format(headers))
+        
+        # Notice: Certificate Issue.
+        # ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1007)
+        # conn = http.client.HTTPSConnection(netloc)
+        # conn.request("POST", path, params, headers)
+        # response = conn.getresponse()
+        # data = response.read()
+        # conn.close()
+        # --- 
+        
+        
 '''
 Responsible for packet traffic
 By Composition: PacketReceiver, PacketDecoder, PacketHandler.
@@ -335,9 +316,30 @@ class PacketHandler():
         self.seqnum                = 5        # Default to 5, due to login sequence.
         self.logout_flag           = False
         self.ack_need_list_changed = False
-        
+        self.ack_need_list         = []
         # Stub
         self.result                = result
+        
+        
+    def packacks(self):
+        acksequence = b''
+        for msgnum in self.ack_need_list:
+            acksequence += pack("<L", msgnum)
+
+        return acksequence
+        
+        
+    def scheduleacknowledgemessage(self):
+
+        if not ord(chr(self.data[0]))&0x40:
+            print("Error: Got asked to ack a message that shouldn't be acked")
+        else:
+            tmpID = self.data[1:5]
+
+            if (ord(chr(self.data[0]))&0x40) & 0x80: 
+              tmpID = zero_decode_ID(tmpId)
+              
+            self.ack_need_list.append(unpack(">L",tmpID)[0])
         
     '''
     SRP: Initialize connection to the sim
@@ -365,8 +367,8 @@ class PacketHandler():
     '''
     def sendAgentUpdate(self):
         CURRENT_SEQ = 3
-        tempacks = packacks()
-        del ack_need_list[:]
+        tempacks = self.packacks()
+        del self.ack_need_list[:]
         if tempacks == "": 
             flags = 0x00
         else:
@@ -483,7 +485,7 @@ class PacketHandler():
         #self.PacketDecoder.debugID()
 
         if ord(chr(self.data[0]))&0x40:
-            scheduleacknowledgemessage(self.data); 
+            self.scheduleacknowledgemessage(); 
             self.ack_need_list_changed = True
         
         if self.PacketDecoder.cond_0 == True:
@@ -516,9 +518,9 @@ class PacketHandler():
  
     def sendPacketAck(self):
         currentsequence = self.seqnum
-        tempacks = packacks()
-        templen = len(ack_need_list)
-        del ack_need_list[:]
+        tempacks = self.packacks()
+        templen = len(self.ack_need_list)
+        del self.ack_need_list[:]
         data_header = pack('>BLB',0x00,currentsequence,0x00) 
         packed_data_message_ID = pack('>L',0xFFFFFFFB)
         packed_ack_len = pack('>B',templen)
