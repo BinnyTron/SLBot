@@ -87,6 +87,8 @@ class Session():
       self.port           = None
       self.circuit_code   = None
       
+      self.packetReceiver = None 
+      self.packetHandler  = None
       
       
     def __sessionLogin(self):
@@ -123,49 +125,47 @@ class Session():
         self.result = self.__sessionLogin()
 
         if "sim_ip" not in self.result.keys():
-          print("\n\r"*3)
-          print("* "*35)
           print("WARNING: The login information is likely not correct.")
-          print("         username or password could be wrong.")
-          print("")
-          print("* "*35)
-          
+
         self.host         = self.result["sim_ip"]
         self.port         = self.result["sim_port"]
         self.circuit_code = self.result["circuit_code"]
 
         # Create a process supporting IPv4 and connectionless UDP frames. 
-        # defaults socket(family=AF_Inet, type=SOCK_STREAM, proto=0, fileno=None)
-        # defaults to blocking mode.
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         
-        packetReceiver = PacketReceiver(sock) 
-        packetHandler  = PacketHandler(sock, self.host, self.port, self.circuit_code, self.result)
+        self.packetReceiver = PacketReceiver(sock) 
+        self.packetHandler  = PacketHandler(sock, self.host, self.port, self.circuit_code, self.result)
      
-        packetHandler.initializeConnection()
-        packetHandler.establishAgentPresence()
-        packetHandler.sendAgentUpdate()
-        packetHandler.sendUUIDNameRequest()
+        self.packetHandler.initializeConnection()
+        self.packetHandler.establishAgentPresence()
+        self.packetHandler.sendAgentUpdate()
+        self.packetHandler.sendUUIDNameRequest()
+        
+        
+    def mainLoop(self):
 
-        while not packetHandler.logout_flag:
+        while not self.packetHandler.logout_flag:
 
-            packetHandler.checkAckRequest()
+            self.packetHandler.checkAckRequest()
 
-            # Automatic garbage collection
-            # objects are decomissioned when no longer needed. 
-            packetReceiver.pollSocketReceive()
-            data = packetReceiver.receivedData 
-            addr = packetReceiver.receivedAddress
+            self.packetReceiver.pollSocketReceive()
+            data = self.packetReceiver.receivedData 
+            addr = self.packetReceiver.receivedAddress
             
             packetDecoder = PacketDecoder(data)
             packetDecoder.decodePacket()
             
-            packetHandler.PacketDecoder = packetDecoder
-            packetHandler.respondToPacket()
+            self.packetHandler.PacketDecoder = packetDecoder
+            self.packetHandler.respondToPacket()
 
             if not data:
                 print("Client has exited!")
                 break
+                
+        self.logout()
+        
+    def logout(self):
 
         agentUUID = uuid.UUID(self.result["agent_id"]).bytes
         sessionUUID = uuid.UUID(self.result["session_id"]).bytes
@@ -174,7 +174,7 @@ class Session():
         # Send Logout Request
         packed_data = b''
         packed_data_message_ID = pack('>L',0xffff00fc)
-        data_header = pack('>BLB', 0x00,packetHandler.seqnum,0x00)
+        data_header = pack('>BLB', 0x00,self.packetHandler.seqnum,0x00)
         packed_data += agentUUID + sessionUUID + pack(">L",0x00)
         packed_data = data_header + packed_data_message_ID + packed_data
         sock.sendto(packed_data, (self.host, self.port))
@@ -182,26 +182,26 @@ class Session():
         
         sock.close()
         
-        # --- 
-        # get_caps
-        _, netloc, path, _, _, _ = urlparse(self.result["seed_capability"])
+       ## --- 
+       ## get_caps
+        # _, netloc, path, _, _, _ = urlparse(self.result["seed_capability"])
         
-        params = "<llsd><array><string>"+ ["ChatSessionRequest"][0]+"</string></array></llsd>"
-        headers = {"content-type": "application/xml"}
+        # params = "<llsd><array><string>"+ ["ChatSessionRequest"][0]+"</string></array></llsd>"
+        # headers = {"content-type": "application/xml"}
         
-        print("netloc: {}".format(netloc))
-        print("path: {}".format(path))
-        print("params: {}".format(params))
-        print("headers: {}".format(headers))
+        # print("netloc: {}".format(netloc))
+        # print("path: {}".format(path))
+        # print("params: {}".format(params))
+        # print("headers: {}".format(headers))
         
-        # Notice: Certificate Issue.
-        # ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1007)
+       ## Notice: Certificate Issue.
+       ## ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1007)
         # conn = http.client.HTTPSConnection(netloc)
         # conn.request("POST", path, params, headers)
         # response = conn.getresponse()
         # data = response.read()
         # conn.close()
-        # --- 
+       ## --- 
         
         
 '''
@@ -545,7 +545,7 @@ class PacketHandler():
 packetdictionary = makepacketdict()
 session = Session(username_first,username_last, password, MAC)
 session.login()
-
+session.mainLoop()
 
 
 
